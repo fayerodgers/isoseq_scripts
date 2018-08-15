@@ -2,32 +2,41 @@ import mysql.connector
 import isoseq
 import config
 import json
+import argparse
+import sys
 
-cnx=mysql.connector.connect(**config.config)
-cursor=cnx.cursor()
 
-select_reads=("SELECT isoseq_reads.read_name, isoseq_reads.scaffold, isoseq_reads.strand, exons.start, exons.end "
-			"FROM isoseq_reads "
-			"LEFT JOIN exons ON isoseq_reads.read_id = exons.read_id")
+parser=argparse.ArgumentParser(description='Write an Apollo compliant GFF from the T muris IsoSeq database')
+parser.add_argument('--clustering_level',action='store',help='specify "clustered" or "5_prime_collapsed". Leaving out clustering_level will return raw reads')
+parser.add_argument('--supporting_reads', action='store',default=1,help='a number. Only print transcripts that have at least this number of supporting reads')
+parser.add_argument('--library',action='store',help='only print transcripts (or clusters) that are exclusive to the specified library')
+parser.add_argument('gff_format',action='store',help='"apollo" or "transdecoder" (slightly different GFF formatting)')
+args=parser.parse_args()
 
-cursor.execute(select_reads)
+if args.clustering_level is None:
+	transcripts=isoseq.retrieve_reads('full')
+elif args.clustering_level=='clustered':
+	transcripts=isoseq.retrieve_clusters('clustered')
+elif args.clustering_level=='5_prime_collapsed':
+	transcripts=isoseq.retrieve_clusters('collapsed')
+else:
+	parser.print_help()
+	sys.exit() 
 
-reads={}
+transcripts_to_delete=set()
 
-for (read_name,scaffold,strand,start,end) in cursor:
-	if read_name not in reads:
-		reads[read_name]={}
-	if 'scaffold' not in reads[read_name]:
-		reads[read_name]['scaffold']=scaffold
-	if 'strand' not in reads[read_name]:
-		reads[read_name]['strand']=strand
-	if 'exons' not in reads[read_name]:
-		reads[read_name]['exons']={}
-	reads[read_name]['exons'][start]=end
 
-cursor.close
-cnx.close
+for transcript in transcripts:
+	if transcripts[transcript]['read_support'] < int(args.supporting_reads):
+		transcripts_to_delete.add(transcript)
+	if args.library is not None:
+		if len(transcripts[transcript]['libraries'])>1 or transcripts[transcript]['libraries'][0]!=args.library:
+			transcripts_to_delete.add(transcript)
 
-#print(json.dumps(reads, indent=4))
+for transcript in transcripts_to_delete:
+	del transcripts[transcript]
 
-isoseq.dump_gff(reads)
+#print(transcripts)	
+
+isoseq.dump_gff(transcripts,args.gff_format)
+
