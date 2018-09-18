@@ -28,6 +28,52 @@ def parse_cigar(start_pos,cigar):
                         start_pos=pos
         return exons
 
+########################
+def parse_gff(gff,gff_type):
+	transcripts={}
+	for line in gff:
+		line.rstrip()
+		temp = line.split("\t")
+		if len(temp) != 9:
+			continue
+		if not (re.match('exon',temp[2]) or re.match('CDS',temp[2]) or re.match('mRNA',temp[2])):
+			continue
+		if gff_type == 'wb':
+			m = re.search('(TMUE_M?[0-9]+)',temp[8])
+		if gff_type == 'transdecoder':
+			m = re.search('Parent=([0-9]+)',temp[8])
+		t = re.search('ORF%20type%3A(.+)%20len',temp[8])
+                s = re.search('score%3D(.+)$',temp[8])
+		if m:
+			transcript = m.group(1)
+		else:
+			print 'error parsing gff'
+			sys.exit()
+		if transcript not in transcripts:
+			transcripts[transcript] = {}
+		transcripts[transcript]['scaffold'] = temp[0]
+		transcripts[transcript]['strand'] = temp[6]
+		if t:
+			 transcripts[transcript]['type'] = t.group(1)
+		if s:
+			transcripts[transcript]['score'] = s.group(1)
+		if re.match('exon',temp[2]):
+			if 'exons' not in  transcripts[transcript]:
+				 transcripts[transcript]['exons'] = {}
+			transcripts[transcript]['exons'][temp[3]]=temp[4]
+                if re.match('CDS',temp[2]):
+                        if 'cds' not in  transcripts[transcript]:
+                                 transcripts[transcript]['cds'] = {}
+			if temp[3] not in transcripts[transcript]['cds']:
+				 transcripts[transcript]['cds'][temp[3]] = {}
+                        transcripts[transcript]['cds'][temp[3]]['end_coord']=temp[4]
+			transcripts[transcript]['cds'][temp[3]]['frame']=temp[7]
+
+	return transcripts
+		
+
+
+
 
 ####################
 def parse_introns_bed(illumina_bed):
@@ -81,8 +127,10 @@ def dump_gff(reads, usage):
 		transcript_start=min(reads[read_name]['exons'].keys())
 		last_exon=max(reads[read_name]['exons'].keys())
 		transcript_end=reads[read_name]['exons'][last_exon]
-		libraries=reads[read_name]['libraries']
-		read_support=reads[read_name]['read_support']
+		if 'libraries' in reads[read_name]:
+			libraries=reads[read_name]['libraries']
+		if 'read_support' in reads[read_name]:
+			read_support=reads[read_name]['read_support']
 		if usage == 'apollo':
 			print "{}\tisoseq\ttranscript\t{}\t{}\t.\t{}\t.\tID={};supporting_reads={};libraries={};".format(scaffold,transcript_start,transcript_end,strand,read_name,read_support,",".join(libraries))
 			i=1
@@ -97,6 +145,16 @@ def dump_gff(reads, usage):
 			for exon in exons:
 				print '{}\tisoseq\texon\t{}\t{}\t.\t{}\t.\tgene_id "{}"; transcript_id "{}"; exon_number "{}";'.format(scaffold,exon,reads[read_name]['exons'][exon],strand,read_name,read_name,i)
 				i+=1
+		if usage == 'apollo_cds':
+			print "{}\tisoseq\ttranscript\t{}\t{}\t.\t{}\t.\tID={};cluster={};".format(scaffold,transcript_start,transcript_end,strand,read_name,reads[read_name]['isoseq_id'])
+			i=1
+			for exon in reads[read_name]['exons']:
+				print "{}\tisoseq\texon\t{}\t{}\t.\t{}\t.\tID={}.exon{};Parent={};".format(scaffold,exon,reads[read_name]['exons'][exon],strand,read_name,i,read_name)
+				i+=1
+			i=1
+			for cds in reads[read_name]['cds']:
+				print "{}\tisoseq\tCDS\t{}\t{}\t.\t{}\t{}\tID={}.cds{};Parent={};".format(scaffold,cds,reads[read_name]['cds'][cds]['end_coord'],strand,reads[read_name]['cds'][cds]['frame'],read_name,i,read_name )	
+				i+=1					 
 
 
 ######################
@@ -363,8 +421,20 @@ def compare_5_prime_ends(shorter_transcript_exons,longer_transcript_exons,exon_c
 		
 				
 	
+#####################################
+def compare_cds(cds_1,cds_2):	#give it two dictionaries of cds 
+	cds_1_count = 0
+	cds_2_count = 0
+	for start_1 in cds_1.keys():
+		if start_1 not in cds_2.keys():
+			continue
+		if cds_1[start_1]['end_coord'] == cds_2[start_1]['end_coord'] and cds_1[start_1]['frame'] == cds_2[start_1]['frame']:
+			cds_1_count += 1
+			cds_2_count += 1
+	cds_1_score = float(cds_1_count)/float(len(cds_1.keys()))
+	cds_2_score = float(cds_2_count)/float(len(cds_2.keys()))
+	return (cds_1_score,cds_2_score)
 	
-
 
 
 
