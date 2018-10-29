@@ -10,7 +10,7 @@ import json
 parser=argparse.ArgumentParser(description='Load IsoSeq reads from a SAM file into an IsoSeq database')
 parser.add_argument('sam', action='store',help='the SAM file to load reads from')
 parser.add_argument('library', action='store', help ='the name of the IsoSeq library')
-parser.add_argument('--illumina_bed',action='store',help='A BED file of Illumina supported introns. If provided, reads will only be loaded into the database if all of their introns are supported by spanning Illumina reads')
+parser.add_argument('--illumina_bed',action='store',help='A BED file of Illumina supported introns. If provided, the valid_introns field will be given a value of 1 if all of their introns are supported by spanning Illumina reads')
 args=parser.parse_args()
 
 sam=open(args.sam,"r")
@@ -47,19 +47,20 @@ cnx=mysql.connector.connect(**config.config)
 cursor=cnx.cursor()
 
 insert_read=("INSERT INTO isoseq_reads "
-        "(scaffold, strand, read_name, library) "
-        "VALUES (%s, %s, %s, %s)")
+        "(scaffold, strand, read_name, library, intron_validation) "
+        "VALUES (%s, %s, %s, %s, %s)")
 
 insert_exons=("INSERT INTO exons "
         "(read_id, start, end) "
         "VALUES (%s, %s, %s)")
 
 for read_name in reads:
+#	validation = 1
 	if valid_introns and len(reads[read_name]['exons']) > 1:
 		validation=isoseq.validate_read(reads[read_name], valid_introns)
-		if  validation != 1:
-			continue
-	read_data=(reads[read_name]['scaffold'], reads[read_name]['strand'], read_name, args.library)
+	elif len(reads[read_name]['exons']) == 1:
+		validation = 1
+	read_data=(reads[read_name]['scaffold'], reads[read_name]['strand'], read_name, args.library, validation)
 	cursor.execute(insert_read,read_data)
 	read_id=cursor.lastrowid
 	for exon_start in reads[read_name]['exons']:
