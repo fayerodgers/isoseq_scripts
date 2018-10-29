@@ -29,47 +29,80 @@ def parse_cigar(start_pos,cigar):
         return exons
 
 ########################
-def parse_gff(gff,gff_type):
+def parse_gff(gff):
 	transcripts={}
+	genes={}
 	for line in gff:
-		line.rstrip()
+		line=line.rstrip()
 		temp = line.split("\t")
 		if len(temp) != 9:
 			continue
-		if not (re.match('exon',temp[2]) or re.match('CDS',temp[2]) or re.match('mRNA',temp[2])):
+		if not (re.match('exon',temp[2]) or re.match('CDS',temp[2]) or re.match('mRNA',temp[2]) or re.match('gene',temp[2])):
 			continue
-		if gff_type == 'wb':
-			m = re.search('(TMUE_M?[0-9]+)',temp[8])
-		if gff_type == 'transdecoder':
-			m = re.search('Parent=([0-9]+)',temp[8])
-		t = re.search('ORF%20type%3A(.+)%20len',temp[8])
-                s = re.search('score%3D(.+)$',temp[8])
-		if m:
-			transcript = m.group(1)
-		else:
-			print 'error parsing gff'
-			sys.exit()
-		if transcript not in transcripts:
-			transcripts[transcript] = {}
-		transcripts[transcript]['scaffold'] = temp[0]
-		transcripts[transcript]['strand'] = temp[6]
-		if t:
-			 transcripts[transcript]['type'] = t.group(1)
-		if s:
-			transcripts[transcript]['score'] = s.group(1)
-		if re.match('exon',temp[2]):
+		if re.match('gene',temp[2]):
+			m = re.search('ID=(.[^;]+)',temp[8])
+			if m:
+				gene=m.group(1)
+				genes[gene]={}
+				genes[gene]['start']=int(temp[3])
+				genes[gene]['end']=int(temp[4])
+				genes[gene]['scaffold']=temp[0]
+				genes[gene]['strand']=temp[6]
+			else:
+				print 'error parsing gff (genes)'
+				sys.exit()
+			#adding these options for transdecoder GFFs so can extract score and CDS type
+			t = re.search('ORF%20type%3A(.+)%20len',temp[8])
+                        if t:
+                                genes[gene]['type'] = t.group(1)
+		elif re.match('mRNA',temp[2]):
+			m = re.search('ID=(.[^;]+)',temp[8])
+			p = re.search('Parent=(.[^;]+)',temp[8])
+			if m and p:
+				transcript=m.group(1)
+				parent=p.group(1)
+			else:
+                                print 'error parsing gff (mRNA)'
+                                sys.exit()
+			if transcript not in transcripts:
+                        	transcripts[transcript]={}
+			transcripts[transcript]['parent']=parent
+			#adding these options for transdecoder GFFs so can extract score and CDS type
+			t = re.search('ORF%20type%3A(.+)%20len',temp[8])
+			s = re.search('score%3D(.+)$',temp[8])
+			if t:
+				transcripts[transcript]['type'] = t.group(1)
+			if s:
+				transcripts[transcript]['score'] = s.group(1)
+		elif re.match('exon',temp[2]):
+			p = re.search('Parent=(.[^;]+)',temp[8])
+			if p:	
+				transcript=p.group(1)
+			else:
+                                print 'error parsing gff (exons)'
+                                sys.exit()
+			if transcript not in transcripts:
+				transcripts[transcript]={}
 			if 'exons' not in  transcripts[transcript]:
-				 transcripts[transcript]['exons'] = {}
-			transcripts[transcript]['exons'][temp[3]]=temp[4]
-                if re.match('CDS',temp[2]):
-                        if 'cds' not in  transcripts[transcript]:
-                                 transcripts[transcript]['cds'] = {}
-			if temp[3] not in transcripts[transcript]['cds']:
-				 transcripts[transcript]['cds'][temp[3]] = {}
-                        transcripts[transcript]['cds'][temp[3]]['end_coord']=temp[4]
+				transcripts[transcript]['exons'] = {}
+				transcripts[transcript]['exons'][temp[3]]=temp[4]
+		elif re.match('CDS',temp[2]):
+			p = re.search('Parent=(.[^;]+)',temp[8])
+                        if p:
+                                transcript=p.group(1)
+                        else:
+                                print 'error parsing gff (CDS)'
+                                sys.exit()
+			if transcript not in transcripts:
+				transcripts[transcript]={}
+			if 'cds' not in  transcripts[transcript]:
+				transcripts[transcript]['cds'] = {}
+			if temp[3] not in  transcripts[transcript]['cds']:
+				transcripts[transcript]['cds'][temp[3]] = {}
+			transcripts[transcript]['cds'][temp[3]]['end_coord']=temp[4]
 			transcripts[transcript]['cds'][temp[3]]['frame']=temp[7]
 
-	return transcripts
+	return (genes,transcripts)
 		
 
 
@@ -203,14 +236,14 @@ def retrieve_clusters(collapsed):
 def retrieve_reads(level):
         cnx=mysql.connector.connect(**config.config)
         cursor=cnx.cursor()
-	select_reads=("SELECT isoseq_reads.read_id, isoseq_reads.scaffold, isoseq_reads.strand, exons.start, exons.end, isoseq_reads.library "
+	select_reads=("SELECT isoseq_reads.read_id, isoseq_reads.scaffold, isoseq_reads.strand, exons.start, exons.end, isoseq_reads.library, isoseq_reads.intron_validation "
 			"FROM isoseq_reads "
 			"LEFT JOIN exons ON isoseq_reads.read_id = exons.read_id")
 	if level == 'non_clustered_only':
 		select_reads=select_reads+" WHERE isoseq_reads.cluster IS NULL"
 	cursor.execute(select_reads)
 	reads={}
-	for (read_id,scaffold,strand,start,end,library) in cursor:
+	for (read_id,scaffold,strand,start,end,library,intron_validation) in cursor:
 		if read_id not in reads:
 			reads[read_id]={}
 		if 'scaffold' not in reads[read_id]:
@@ -225,6 +258,8 @@ def retrieve_reads(level):
 		reads[read_id]['libraries'].add(library)
 		if 'read_support' not in reads[read_id]:
 			reads[read_id]['read_support']=1
+		if 'intron_validation' not in reads[read_id]:
+			reads[read_id]['intron_validation']=intron_validation
 	return reads
 
 #########################
@@ -236,6 +271,8 @@ def cluster_reads(reads,clusters):
 			"(cluster, start, end) "
 			"VALUES (%s,%s,%s)")
 	for read_id in reads:
+		if reads[read_id]['intron_validation'] != 1:
+			continue
 #		print read_id
 		match=0
 		scaffold=reads[read_id]['scaffold']
@@ -437,4 +474,48 @@ def compare_cds(cds_1,cds_2):	#give it two dictionaries of cds
 	
 
 
+#######################################
+def feature_level_clustering(features):
+	blocks={}
+	for feature in features:
+        	feature_coords={}
+        	strand = features[feature]['strand']
+        	scaffold = features[feature]['scaffold']
+		try:
+			start=features[feature]['start']
+		except:
+        		start = min(features[feature]['exons'].keys())
+        	try:
+			end=features[feature]['end']
+		except:
+			end = max(features[feature]['exons'].values())
+        	feature_coords[start]=end
+		match = 0
+        	for block in blocks:
+                	block_coords = {}
+                	block_coords[blocks[block]['start']]=blocks[block]['end']
+                	if scaffold != blocks[block]['scaffold']:
+                        	continue
+                	if strand != blocks[block]['strand']:
+                        	continue
+                	match= compare_equal_length_transcripts(feature_coords, block_coords,1)
+                	if match :
+                        	b=block
+                        	break
+			else:
+				 match = 0
+        	if match == 1:
+                	block_start= min(start,blocks[b]['start'])
+                	block_end= max(end,blocks[b]['end'])
+                	blocks[b]['start'] = block_start
+			blocks[b]['end']=block_end
+        	#no match, make a new block
+        	elif match == 0:	
+                	blocks[feature]={}
+                	blocks[feature]['scaffold']=scaffold
+                	blocks[feature]['strand']=strand
+                	blocks[feature]['start']=start
+                	blocks[feature]['end']=end
+
+	return blocks
 
