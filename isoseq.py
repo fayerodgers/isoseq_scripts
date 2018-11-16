@@ -100,7 +100,11 @@ def parse_gff(gff):
 			if temp[3] not in  transcripts[transcript]['cds']:
 				transcripts[transcript]['cds'][temp[3]] = {}
 			transcripts[transcript]['cds'][temp[3]]['end_coord']=temp[4]
-			transcripts[transcript]['cds'][temp[3]]['frame']=temp[7]
+			if temp[6] == '+':
+				frame = (int(temp[3]) + int(temp[7])) % 3
+			elif temp[6] == '-':
+				frame = (int(temp[4]) - int(temp[7])) % 3 
+			transcripts[transcript]['cds'][temp[3]]['frame']=frame
 
 	return (genes,transcripts)
 		
@@ -195,9 +199,9 @@ def dump_gff(reads, usage):
 def retrieve_clusters(collapsed):
 	cnx=mysql.connector.connect(**config.config)
 	cursor=cnx.cursor()
-	select_clusters=("SELECT DISTINCT isoseq_reads.cluster, isoseq_reads.scaffold, isoseq_reads.strand, exon_clusters.start, exon_clusters.end "
-			"FROM isoseq_reads "
-			"LEFT JOIN exon_clusters ON isoseq_reads.cluster = exon_clusters.cluster")
+	select_clusters=("SELECT clusters.cluster, clusters.scaffold, clusters.strand, exon_clusters.start, exon_clusters.end "
+			"FROM clusters "
+			"LEFT JOIN exon_clusters ON clusters.cluster = exon_clusters.cluster")
 	if collapsed=='collapsed':
 		select_clusters=("SELECT DISTINCT isoseq_reads.5_prime_cluster, isoseq_reads.scaffold, isoseq_reads.strand, exon_clusters.start, exon_clusters.end "
                         "FROM isoseq_reads "
@@ -267,6 +271,9 @@ def cluster_reads(reads,clusters):
 	cnx=mysql.connector.connect(**config.config)
         cursor=cnx.cursor()
 	assign_to_cluster=("UPDATE isoseq_reads SET cluster=%s WHERE read_id=%s")
+	create_cluster=("INSERT INTO clusters "
+		"(cluster,scaffold,strand) "	
+		"VALUES (%s,%s,%s)")
 	update_exon_clusters=("INSERT INTO exon_clusters "
 			"(cluster, start, end) "
 			"VALUES (%s,%s,%s)")
@@ -295,6 +302,8 @@ def cluster_reads(reads,clusters):
 				break
 		if match==0:
 			#make a new cluster
+			data=(read_id,scaffold,strand)
+			cursor.execute(create_cluster,data)
 			data=(read_id,read_id)
 			cursor.execute(assign_to_cluster,data)
 			for start,end in reads[read_id]['exons'].items():
@@ -519,3 +528,122 @@ def feature_level_clustering(features):
 
 	return blocks
 
+######################################
+def insert_cds(transcripts):
+	cnx=mysql.connector.connect(**config.config)
+	cursor=cnx.cursor()
+	insert_transcript = ("INSERT INTO transcripts "
+        "(transcript, cluster, score, type) "
+        "VALUES (%s, %s, %s, %s)")
+
+	insert_cds = ("INSERT INTO cds "
+        "(transcript, start, end, frame) "
+        "VALUES (%s, %s, %s, %s)")
+
+	for transcript in transcripts:
+        	cluster=transcripts[transcript]['parent']
+        	score=transcripts[transcript]['score']
+        	t_type=transcripts[transcript]['type']
+        	data=(transcript,cluster,score,t_type)
+	       	cursor.execute(insert_transcript,data)
+        	for start in transcripts[transcript]['cds']:
+                	end=transcripts[transcript]['cds'][start]['end_coord']
+                	frame=transcripts[transcript]['cds'][start]['frame']
+                	data=(transcript,start,end,frame)
+	               	cursor.execute(insert_cds,data)
+	cnx.commit()
+	cursor.close()
+	cnx.close()
+
+#######################################
+def retrieve_orphan_transcripts():
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	get_orphan_transcripts= ("SELECT transcripts.transcript,transcripts.type,"
+        "clusters.scaffold,clusters.strand,"
+        "cds.start,cds.end,cds.frame "
+        "FROM transcripts "
+        "LEFT JOIN clusters ON transcripts.cluster = clusters.cluster "
+        "LEFT JOIN cds ON transcripts.transcript = cds.transcript "
+        "WHERE transcripts.gene is NULL")
+
+	transcripts={}
+	cursor.execute(get_orphan_transcripts)
+	for(transcript,t_type,scaffold,strand,start,end,frame) in cursor:
+        	if transcript not in transcripts:
+                	transcripts[transcript]={}
+        	transcripts[transcript]['type']=t_type
+        	transcripts[transcript]['scaffold']=scaffold
+        	transcripts[transcript]['strand']=strand
+        	if 'cds' not in transcripts[transcript]:
+                	transcripts[transcript]['cds']={}
+        	if start not in transcripts[transcript]['cds']:
+               		transcripts[transcript]['cds'][start]={}
+        	transcripts[transcript]['cds'][start]['end']=end
+        	transcripts[transcript]['cds'][start]['frame']=frame
+
+        cursor.close()
+        cnx.close()
+	return(transcripts)
+
+#######################################
+def assign_transcripts_to_genes(transcripts):
+	cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+	query_for_gene =("SELECT gene from transcripts "
+                "LEFT JOIN clusters ON transcripts.cluster = clusters.cluster "
+                "LEFT JOIN cds ON transcripts.transcript = cds.transcript "
+                "WHERE clusters.scaffold = %s AND clusters.strand = %s "
+                "AND cds.frame = %s "
+                "AND ((cds.start <= %s AND cds.end >= %s) OR (cds.start <= %s AND cds.end >= %s))")
+
+	assign_to_gene = ("UPDATE transcripts SET gene = %s WHERE transcript = %s")
+
+	reassign_gene = ("UPDATE transcripts SET gene = %s WHERE gene = %s")
+
+	get_gene_name = ("SELECT MAX(gene) FROM transcripts")
+	for transcript in transcripts:
+        	genes=set()
+        	scaffold=transcripts[transcript]['scaffold']
+        	strand=transcripts[transcript]['strand']
+        	for start in transcripts[transcript]['cds'].keys():
+                	end=transcripts[transcript]['cds'][start]['end']
+                	frame=transcripts[transcript]['cds'][start]['frame']
+                	data=(scaffold,strand,frame,start,start,end,end)
+                	cursor.execute(query_for_gene,data)
+                	for (gene,) in cursor:
+                        	if gene is None:
+                                	continue
+                        	else:
+                                	genes.add(gene)
+        	if len(genes) == 1:
+                	data=(genes.pop(),transcript)
+                	cursor.execute(assign_to_gene,data)
+                	cnx.commit()
+                	continue
+        	cursor.execute(get_gene_name)
+        	for (gene,) in cursor:
+                	if gene is None:
+                        	gene = 1
+                	else:
+                        	gene += 1
+        	if len(genes) > 1:
+                	print "transcript "+transcript+" overlaps more than one gene!"
+                	#give all of those genes the same id
+                	for gene_to_merge in genes:
+                        	data=(gene,gene_to_merge)
+                        	cursor.execute(reassign_gene,data)
+                        	data=(gene,transcript)
+                        	cursor.execute(assign_to_gene,data)
+                        	cnx.commit()
+                	continue
+        	if len(genes) < 1:
+                	data=(gene,transcript)
+                	cursor.execute(assign_to_gene,data)
+                	cnx.commit()
+	cursor.close()
+	cnx.close()
+	
+#########################################
+	
