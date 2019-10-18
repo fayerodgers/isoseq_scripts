@@ -40,7 +40,7 @@ def parse_gff(gff):
 		if not (re.match('exon',temp[2]) or re.match('CDS',temp[2]) or re.match('mRNA',temp[2]) or re.match('gene',temp[2])):
 			continue
 		if re.match('gene',temp[2]):
-			m = re.search('ID=(.[^;]+)',temp[8])
+			m = re.search('ID=(?:Gene:)?(.[^;]+)',temp[8])
 			if m:
 				gene=m.group(1)
 				genes[gene]={}
@@ -56,8 +56,8 @@ def parse_gff(gff):
                         if t:
                                 genes[gene]['type'] = t.group(1)
 		elif re.match('mRNA',temp[2]):
-			m = re.search('ID=(.[^;]+)',temp[8])
-			p = re.search('Parent=(.[^;]+)',temp[8])
+			m = re.search('ID=(?:Transcript:)?(.[^;]+)',temp[8])
+			p = re.search('Parent=(?:Gene:)?(.[^;]+)',temp[8])
 			if m and p:
 				transcript=m.group(1)
 				parent=p.group(1)
@@ -75,7 +75,7 @@ def parse_gff(gff):
 			if s:
 				transcripts[transcript]['score'] = s.group(1)
 		elif re.match('exon',temp[2]):
-			p = re.search('Parent=(.[^;]+)',temp[8])
+			p = re.search('Parent=(?:Transcript:)?(.[^;]+)',temp[8])
 			if p:	
 				transcript=p.group(1)
 			else:
@@ -85,26 +85,32 @@ def parse_gff(gff):
 				transcripts[transcript]={}
 			if 'exons' not in  transcripts[transcript]:
 				transcripts[transcript]['exons'] = {}
-				transcripts[transcript]['exons'][temp[3]]=temp[4]
+			transcripts[transcript]['exons'][int(temp[3])]=int(temp[4])
 		elif re.match('CDS',temp[2]):
-			p = re.search('Parent=(.[^;]+)',temp[8])
+			p = re.search('Parent=(?:Transcript:)?(.[^;]+)',temp[8])
                         if p:
                                 transcript=p.group(1)
                         else:
                                 print 'error parsing gff (CDS)'
                                 sys.exit()
-			if transcript not in transcripts:
-				transcripts[transcript]={}
-			if 'cds' not in  transcripts[transcript]:
-				transcripts[transcript]['cds'] = {}
-			if temp[3] not in  transcripts[transcript]['cds']:
-				transcripts[transcript]['cds'][temp[3]] = {}
-			transcripts[transcript]['cds'][temp[3]]['end_coord']=temp[4]
-			if temp[6] == '+':
-				frame = (int(temp[3]) + int(temp[7])) % 3
-			elif temp[6] == '-':
-				frame = (int(temp[4]) - int(temp[7])) % 3 
-			transcripts[transcript]['cds'][temp[3]]['frame']=frame
+			i = re.search(',',temp[8])  #WB GFFs sometimes have CDS features with multiple parents (annoyingly).
+			if i:
+				transcripts_list=transcript.split(',Transcript:')
+			else:
+				transcripts_list=[transcript]
+			for transcript in transcripts_list:
+				if transcript not in transcripts:
+					transcripts[transcript]={}
+				if 'cds' not in  transcripts[transcript]:
+					transcripts[transcript]['cds'] = {}
+				if temp[3] not in  transcripts[transcript]['cds']:
+					transcripts[transcript]['cds'][int(temp[3])] = {}
+				transcripts[transcript]['cds'][int(temp[3])]['end_coord']=int(temp[4])
+				if temp[6] == '+':
+					frame = (int(temp[3]) + int(temp[7])) % 3
+				elif temp[6] == '-':
+					frame = (int(temp[4]) - int(temp[7])) % 3 
+				transcripts[transcript]['cds'][int(temp[3])]['frame']=frame
 
 	return (genes,transcripts)
 		
@@ -646,4 +652,198 @@ def assign_transcripts_to_genes(transcripts):
 	cnx.close()
 	
 #########################################
+
+def retrieve_overlapping_transcripts(transcript,strand,scaffold):
+
+	cnx=mysql.connector.connect(**config.config)
+	cursor=cnx.cursor()
+
+	cds_match_query = ("SELECT transcripts.transcript, cds.start, cds.end FROM transcripts "
+                "LEFT JOIN clusters ON transcripts.cluster = clusters.cluster "
+                "LEFT JOIN cds ON transcripts.transcript = cds.transcript "
+                "WHERE clusters.scaffold = %s AND clusters.strand = %s AND transcripts.type = 'complete' "
+                "AND cds.frame = %s "
+                "AND ((cds.start <= %s AND cds.end >= %s) OR (cds.start <= %s AND cds.end >= %s) OR (cds.start > %s AND cds.end < %s))")
 	
+	cds_matches={}
+
+        for start in transcript['cds']:
+                end=transcript['cds'][start]['end_coord']
+                data = (scaffold,strand,transcript['cds'][start]['frame'],start,start,end,end,start,end)
+                cursor.execute(cds_match_query,data)
+                for (iso_transcript,iso_start,iso_end) in cursor:
+                        if iso_transcript not in cds_matches:
+                                cds_matches[iso_transcript] = 0
+                        if (iso_start == start) and (iso_end == end):
+                                cds_matches[iso_transcript] += 1
+
+	exon_match_query = ("SELECT transcripts.transcript, exon_clusters.start, exon_clusters.end FROM transcripts "
+                "LEFT JOIN clusters ON transcripts.cluster = clusters.cluster "
+                "LEFT JOIN exon_clusters ON transcripts.cluster = exon_clusters.cluster "
+                "WHERE clusters.scaffold = %s AND clusters.strand = %s AND transcripts.type = 'complete' "
+                "AND ((exon_clusters.start <= %s AND exon_clusters.end >= %s) OR (exon_clusters.start <= %s AND exon_clusters.end >= %s) OR (exon_clusters.start > %s AND exon_clusters.end < %s))")
+
+        exon_matches={}
+	
+	for start in transcript['exons']:
+		end=transcript['exons'][start]
+		data = (scaffold,strand,start,start,end,end,start,end)
+		cursor.execute(exon_match_query,data)
+		for (iso_transcript,iso_start,iso_end) in cursor:
+                        if iso_transcript not in exon_matches:
+                                exon_matches[iso_transcript] = 0
+                        if (iso_start == start) and (iso_end == end):
+                                exon_matches[iso_transcript] += 1
+	
+	return(cds_matches,exon_matches)
+
+	cursor.close()
+	cnx.close()
+
+
+##############################################
+
+def quantify_transcript_overlap(transcript,cds_matches,exon_matches): #calculate the 
+	
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	get_cds_number = ("SELECT COUNT(*) FROM cds WHERE transcript = %s" )
+
+	get_exon_number = ("SELECT COUNT(*) FROM exon_clusters "
+                "LEFT JOIN clusters ON exon_clusters.cluster = clusters.cluster "
+                "LEFT JOIN transcripts ON clusters.cluster = transcripts.cluster "
+                "WHERE transcripts.transcript = %s")
+
+	insert_gene_iso_relation = ("INSERT INTO wb_genes (wb_transcript,isoseq_transcript,wb_gene,wb_coverage_exons,iso_coverage_exons,wb_coverage_cds,iso_coverage_cds) VALUES (%s,%s,%s,%s,%s,%s,%s)")
+	
+        transcript_cds = len(transcript['cds'].keys())
+        transcript_exons = len(transcript['exons'].keys())
+
+        for iso_transcript in cds_matches:
+                cursor.execute(get_cds_number,(iso_transcript,))
+                for (i,) in cursor:
+                        iso_cds = i
+                wb_coverage_cds = round(float(cds_matches[iso_transcript])/float(transcript_cds),2)
+                iso_coverage_cds = round(float(cds_matches[iso_transcript])/float(iso_cds),2)
+                cursor.execute(get_exon_number,(iso_transcript,))
+                for (i,) in cursor:
+                        iso_exons = i
+                wb_coverage_exons = round(float(exon_matches[iso_transcript])/float(transcript_exons),2)
+                iso_coverage_exons = round(float(exon_matches[iso_transcript])/float(iso_exons),2)              
+                data=(transcript,iso_transcript,gene,wb_coverage_exons,iso_coverage_exons,wb_coverage_cds,iso_coverage_cds)
+                cursor.execute(insert_gene_iso_relation,data)
+	
+        cnx.commit()
+	cursor.close()
+        cnx.close()
+	
+###################################################
+
+def identify_splits(relations):
+
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	splits = ("SELECT wb_gene FROM (SELECT DISTINCT wb_genes.wb_gene, transcripts.gene FROM wb_genes LEFT JOIN transcripts ON wb_genes.isoseq_transcript = transcripts.transcript) AS temp GROUP BY wb_gene HAVING COUNT(wb_gene) > 1")
+
+	if 'split' not in relations:
+		relations['split']={}
+
+	cursor.execute(splits)
+	
+	for (wb_gene,) in cursor:
+		 relations['split'][wb_gene] = ()
+	
+        cursor.close()
+	cnx.close()
+	
+	return(relations)
+
+#####################################################
+
+
+def identify_merges(relations):
+
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	merges = ("SELECT wb_gene,gene FROM "
+	"(SELECT DISTINCT wb_genes.wb_gene, transcripts.gene FROM wb_genes LEFT JOIN transcripts ON wb_genes.isoseq_transcript = transcripts.transcript) t "
+	"WHERE gene IN (SELECT gene FROM (SELECT DISTINCT wb_genes.wb_gene, transcripts.gene FROM wb_genes LEFT JOIN transcripts "
+	"ON wb_genes.isoseq_transcript = transcripts.transcript) t1 "
+	"GROUP BY gene HAVING COUNT(gene) > 1)")
+
+	if 'merge' not in relations:
+		relations['merge']={}
+
+	cursor.execute(merges)
+
+	for (wb_gene,gene) in cursor:
+		relations['merge'][wb_gene] = gene
+
+        cursor.close()
+        cnx.close()
+
+        return(relations)
+
+######################################################
+
+def identify_matches(relations):
+
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	matches = ("SELECT wb_gene,wb_transcript,isoseq_transcript,wb_coverage_cds,iso_coverage_cds FROM wb_genes")
+
+	relations['full_match']={}
+	relations['part_match']={}
+	relations['suggest_alts']={}
+	
+	cursor.execute(matches)	
+
+	for (wb_gene,wb_transcript,isoseq_transcript,wb_coverage_cds,iso_coverage_cds) in cursor:
+        	if (wb_gene in relations['split'] or wb_gene in relations['merge'] or wb_gene in relations['complex']):
+                	continue
+		if (wb_coverage_cds == 1.0 and iso_coverage_cds == 1.0):
+			relations['full_match'][wb_gene]={}
+		else:
+			relations['part_match'][wb_gene]={}	
+	for wb_gene in relations['full_match'].keys():
+		if wb_gene in relations['part_match']:
+			del relations['full_match'][wb_gene]
+			del relations['part_match'][wb_gene]
+			relations['suggest_alts'][wb_gene]=()
+
+        cursor.close()
+        cnx.close()
+
+        return(relations)
+
+#########################################################
+
+def update_relationships(relations,relation):
+	
+        cnx=mysql.connector.connect(**config.config)
+        cursor=cnx.cursor()
+
+	update_wb_genes = ("UPDATE wb_genes SET relation = %s WHERE wb_gene = %s")
+
+	for wb_gene in relations[relation]:
+		data=(relation,wb_gene)
+		cursor.execute(update_wb_genes,data)
+
+        cnx.commit()
+        cursor.close()
+        cnx.close()
+
+
+#############################################################
+	
+
+
+
+
+
+
+

@@ -1,6 +1,6 @@
 -- MySQL dump 10.14  Distrib 5.5.52-MariaDB, for Linux (x86_64)
 --
--- Host: mysql-wormbase-pipelines    Database: tmuris_isoseq
+-- Host: mysql-wormbase-pipelines    Database: test_isoseq
 -- ------------------------------------------------------
 -- Server version	5.6.33
 
@@ -16,6 +16,38 @@
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
 --
+-- Table structure for table `cds`
+--
+
+DROP TABLE IF EXISTS `cds`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `cds` (
+  `transcript` varchar(20) NOT NULL DEFAULT '',
+  `start` int(11) NOT NULL,
+  `end` int(11) NOT NULL,
+  `frame` int(1) DEFAULT NULL,
+  PRIMARY KEY (`transcript`,`start`),
+  CONSTRAINT `fk_id` FOREIGN KEY (`transcript`) REFERENCES `transcripts` (`transcript`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `clusters`
+--
+
+DROP TABLE IF EXISTS `clusters`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `clusters` (
+  `cluster` int(11) NOT NULL,
+  `scaffold` varchar(100) NOT NULL,
+  `strand` varchar(10) NOT NULL,
+  PRIMARY KEY (`cluster`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `exon_clusters`
 --
 
@@ -26,7 +58,8 @@ CREATE TABLE `exon_clusters` (
   `cluster` int(11) NOT NULL,
   `start` int(11) NOT NULL,
   `end` int(11) NOT NULL,
-  PRIMARY KEY (`cluster`,`start`)
+  PRIMARY KEY (`cluster`,`start`),
+  CONSTRAINT `fk_cluster_to_exons` FOREIGN KEY (`cluster`) REFERENCES `clusters` (`cluster`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -61,10 +94,54 @@ CREATE TABLE `isoseq_reads` (
   `cluster` int(11) DEFAULT NULL,
   `5_prime_cluster` int(11) DEFAULT NULL,
   `library` varchar(100) DEFAULT NULL,
+  `intron_validation` int(11) DEFAULT NULL,
   PRIMARY KEY (`read_id`),
   UNIQUE KEY `read_name` (`read_name`),
-  UNIQUE KEY `read_name_2` (`read_name`)
-) ENGINE=InnoDB AUTO_INCREMENT=2115095 DEFAULT CHARSET=latin1;
+  UNIQUE KEY `read_name_2` (`read_name`),
+  KEY `fk_cluster_to_reads` (`cluster`),
+  CONSTRAINT `fk_cluster_to_reads` FOREIGN KEY (`cluster`) REFERENCES `clusters` (`cluster`)
+) ENGINE=InnoDB AUTO_INCREMENT=2417181 DEFAULT CHARSET=latin1;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `transcripts`
+--
+
+DROP TABLE IF EXISTS `transcripts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `transcripts` (
+  `transcript` varchar(20) NOT NULL,
+  `cluster` int(11) NOT NULL,
+  `score` int(11) DEFAULT NULL,
+  `type` varchar(20) DEFAULT NULL,
+  `gene` int(11) DEFAULT NULL,
+  PRIMARY KEY (`transcript`),
+  KEY `fk_cluster_to_transcripts` (`cluster`),
+  CONSTRAINT `fk_cluster_to_transcripts` FOREIGN KEY (`cluster`) REFERENCES `clusters` (`cluster`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `wb_genes`
+--
+
+DROP TABLE IF EXISTS `wb_genes`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `wb_genes` (
+  `wb_transcript` varchar(100) NOT NULL,
+  `isoseq_transcript` varchar(20) NOT NULL,
+  `wb_gene` varchar(100) DEFAULT NULL,
+  `wb_coverage_exons` decimal(3,2) DEFAULT NULL,
+  `iso_coverage_exons` decimal(3,2) DEFAULT NULL,
+  `wb_coverage_cds` decimal(3,2) DEFAULT NULL,
+  `iso_coverage_cds` decimal(3,2) DEFAULT NULL,
+  `relation` varchar(200) DEFAULT NULL,
+  PRIMARY KEY (`wb_transcript`,`isoseq_transcript`),
+  KEY `fk_transcripts_to_wb_gene` (`isoseq_transcript`),
+  CONSTRAINT `fk_transcripts_to_wb_gene` FOREIGN KEY (`isoseq_transcript`) REFERENCES `transcripts` (`transcript`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -76,4 +153,4 @@ CREATE TABLE `isoseq_reads` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2018-09-20 11:28:59
+-- Dump completed on 2019-01-28 16:13:00

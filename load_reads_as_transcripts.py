@@ -18,7 +18,7 @@ sam=open(args.sam,"r")
 reads={}
 for line in sam:
 	if re.match('@',line):
-		print line
+#		print line
 		continue
 	fields=line.split("\t")
 	read_name=fields[0];
@@ -26,6 +26,8 @@ for line in sam:
 	reads[read_name]['scaffold']=fields[2]
 	start_pos=int(fields[3])
 	cigar=fields[5]
+	#replace any 'deletions' that are > 10 bp with introns.
+	cigar=re.sub(r'(\d\d+)D',r'\1N',cigar)
 	exons=isoseq.parse_cigar( start_pos, cigar )
 	reads[read_name]['exons']=exons
 	flag=fields[1]

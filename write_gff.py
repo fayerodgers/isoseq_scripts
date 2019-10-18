@@ -10,9 +10,12 @@ parser=argparse.ArgumentParser(description='Write an Apollo compliant GFF from t
 parser.add_argument('--clustering_level',action='store',help='specify "clustered" or "5_prime_collapsed". Leaving out clustering_level will return raw reads')
 parser.add_argument('--supporting_reads', action='store',default=1,help='a number. Only print transcripts that have at least this number of supporting reads')
 parser.add_argument('--library',action='store',help='only print transcripts (or clusters) that are exclusive to the specified library')
+parser.add_argument('--gene_list',action='store',help='a file listing the IsoSeq transcript IDs that should be printed')
 parser.add_argument('gff_format',action='store',help='"apollo" or "transdecoder" (slightly different GFF formatting)')
 args=parser.parse_args()
 
+#if args.gene_list is not None:
+	
 if args.clustering_level is None:
 	transcripts=isoseq.retrieve_reads('full')
 elif args.clustering_level=='clustered':
